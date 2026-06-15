@@ -290,4 +290,161 @@ client.on("interactionCreate", async interaction => {
     if (commandName === "afk") { afkUsers.set(interaction.user.id, { reason: interaction.options.getString("reason") || "AFK" }); return interaction.editReply({ content: `✅ AFK set.` }); }
     if (commandName === "removeafk") { if (!afkUsers.has(interaction.user.id)) return interaction.editReply({ content: "ℹ️ You are not AFK." }); afkUsers.delete(interaction.user.id); return interaction.editReply({ content: "✅ AFK removed." }); }
     if (commandName === "say") { await interaction.channel.send(interaction.options.getString("message")); return interaction.editReply({ content: "✅ Sent." }); }
-    if (commandName === "announcement") { await interaction.channel.send({ embeds: [new EmbedBuilder().setTitle("📢 Announcement").setDescription(interaction.options.getString("message")).setColor("Blue").setFooter({ text: `By ${interaction.user.tag}` }).setTimestamp()] }); return interac
+    if (commandName === "announcement") { await interaction.channel.send({ embeds: [new EmbedBuilder().setTitle("📢 Announcement").setDescription(interaction.options.getString("message")).setColor("Blue").setFooter({ text: `By ${interaction.user.tag}` }).setTimestamp()] }); return interaction.editReply({ content: "✅ Posted." });
+  // ---- Spam Detection (5 msgs in 5s) ----
+  const now = Date.now();
+  if (!spamMap.has(userId)) spamMap.set(userId, []);
+  const ts = spamMap.get(userId).filter(t => now - t < 5000);
+  ts.push(now);
+  spamMap.set(userId, ts);
+  if (ts.length >= 5) {
+    spamMap.delete(userId);
+    try {
+      await message.member?.timeout(60 * 1000, "Spam");
+      await message.channel.send({ embeds: [new EmbedBuilder().setDescription(`🛑 ${message.author}, timed out 1 min for spamming.`).setColor("Red")] });
+      getLogsChannel(message.guild)?.send({ embeds: [new EmbedBuilder().setTitle("🛑 Spam Detected").addFields({ name: "User", value: `${message.author.tag}`, inline: true }, { name: "Channel", value: `<#${message.channel.id}>`, inline: true }).setColor("Orange").setTimestamp()] });
+    } catch {}
+  }
+});
+
+// ================================================
+// INTERACTIONS
+// ================================================
+
+client.on("interactionCreate", async interaction => {
+  if (interaction.isButton() && interaction.customId === "verify") {
+    const role = interaction.guild.roles.cache.get(config.verifiedRole);
+    if (!role) return interaction.reply({ content: "⚠️ Verified role not found.", ephemeral: true });
+    if (interaction.member.roles.cache.has(role.id)) return interaction.reply({ content: "✅ Already verified!", ephemeral: true });
+    try {
+      await interaction.member.roles.add(role);
+      if (unverifiedRoleId) { const ur = interaction.guild.roles.cache.get(unverifiedRoleId); if (ur) await interaction.member.roles.remove(ur).catch(() => {}); }
+      await interaction.reply({ embeds: [new EmbedBuilder().setTitle("✅ Verified!").setDescription(`Welcome to **${interaction.guild.name}**!`).setColor("Green").setTimestamp()], ephemeral: true });
+      const user = interaction.user, member = interaction.member;
+      const accAge = Math.floor((Date.now() - user.createdTimestamp) / 86_400_000);
+      const embed = new EmbedBuilder().setTitle("🔓 New Member Verified")
+        .setThumbnail(user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .addFields(
+          { name: "👤 Username", value: user.tag, inline: true },
+          { name: "🆔 User ID", value: `\`${user.id}\``, inline: true },
+          { name: "📅 Account Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:F>` },
+          { name: "📥 Joined Server", value: member.joinedAt ? `<t:${Math.floor(member.joinedAt.getTime() / 1000)}:F>` : "Unknown" },
+          { name: "🗓️ Account Age", value: `${accAge} days`, inline: true }
+        ).setColor("Green").setTimestamp();
+      for (const oid of [config.ownerId, config.secondOwnerId]) {
+        const o = await client.users.fetch(oid).catch(() => null);
+        o?.send({ embeds: [embed] }).catch(() => {});
+      }
+      getLogsChannel(interaction.guild)?.send({ embeds: [embed] });
+    } catch { interaction.reply({ content: "❌ Failed. Check bot permissions.", ephemeral: true }); }
+    return;
+  }
+
+  if (!interaction.isChatInputCommand()) return;
+  const { commandName } = interaction;
+  try { await interaction.deferReply({ ephemeral: true }); } catch { return; }
+
+  try {
+    if (commandName === "afk") { afkUsers.set(interaction.user.id, { reason: interaction.options.getString("reason") || "AFK" }); return interaction.editReply({ content: `✅ AFK set.` }); }
+    if (commandName === "removeafk") { if (!afkUsers.has(interaction.user.id)) return interaction.editReply({ content: "ℹ️ You are not AFK." }); afkUsers.delete(interaction.user.id); return interaction.editReply({ content: "✅ AFK removed." }); }
+    if (commandName === "say") { await interaction.channel.send(interaction.options.getString("message")); return interaction.editReply({ content: "✅ Sent." }); }
+    if (commandName === "announcement") { await interaction.channel.send({ embeds: [new EmbedBuilder().setTitle("📢 Announcement").setDescription(interaction.options.getString("message")).setColor("Blue").setFooter({ text: `By ${interaction.user.tag}` }).setTimestamp()] }); return interaction.editReply({ content: "✅ Posted." }); }
+    if (commandName === "dm") { await interaction.options.getUser("user").send(interaction.options.getString("message")); return interaction.editReply({ content: "✅ DM sent." }); }
+    if (commandName === "dmall") {
+      if (!isOwner(interaction.user.id)) return interaction.editReply({ content: "❌ Owner only." });
+      const text = interaction.options.getString("message"); let sent = 0;
+      await interaction.editReply({ content: "📨 Sending…" });
+      interaction.guild.members.cache.forEach(m => { if (!m.user.bot) m.send(text).then(() => sent++).catch(() => {}); });
+      setTimeout(() => interaction.followUp({ content: `✅ Sent to **${sent}** members.`, ephemeral: true }).catch(() => {}), 3000);
+      return;
+    }
+    if (commandName === "timeout") {
+      const target = interaction.options.getMember("user"), duration = interaction.options.getString("duration"), reason = interaction.options.getString("reason") || "No reason";
+      if (!target) return interaction.editReply({ content: "❌ Member not found." });
+      const dur = ms(duration); if (!dur) return interaction.editReply({ content: "❌ Invalid duration. Use: 10m, 1h, 7d" });
+      await target.timeout(dur, reason);
+      getLogsChannel(interaction.guild)?.send({ embeds: [new EmbedBuilder().setTitle("⏱️ Timed Out").addFields({ name: "User", value: target.user.tag, inline: true }, { name: "Duration", value: duration, inline: true }, { name: "Reason", value: reason }, { name: "By", value: interaction.user.tag, inline: true }).setColor("Orange").setTimestamp()] });
+      return interaction.editReply({ content: `✅ **${target.user.tag}** timed out for **${duration}**.` });
+    }
+    if (commandName === "untimeout") {
+      const target = interaction.options.getMember("user"); if (!target) return interaction.editReply({ content: "❌ Not found." });
+      await target.timeout(null); return interaction.editReply({ content: `✅ Timeout removed for **${target.user.tag}**.` });
+    }
+    if (commandName === "kick") {
+      const target = interaction.options.getMember("user"), reason = interaction.options.getString("reason") || "No reason";
+      if (!target) return interaction.editReply({ content: "❌ Not found." });
+      await target.kick(reason);
+      getLogsChannel(interaction.guild)?.send({ embeds: [new EmbedBuilder().setTitle("👢 Kicked").addFields({ name: "User", value: target.user.tag, inline: true }, { name: "Reason", value: reason }, { name: "By", value: interaction.user.tag, inline: true }).setColor("Orange").setTimestamp()] });
+      return interaction.editReply({ content: `✅ **${target.user.tag}** kicked.` });
+    }
+    if (commandName === "ban") {
+      const target = interaction.options.getMember("user"), reason = interaction.options.getString("reason") || "No reason";
+      if (!target) return interaction.editReply({ content: "❌ Not found." });
+      await target.ban({ reason });
+      getLogsChannel(interaction.guild)?.send({ embeds: [new EmbedBuilder().setTitle("🔨 Banned").addFields({ name: "User", value: target.user.tag, inline: true }, { name: "Reason", value: reason }, { name: "By", value: interaction.user.tag, inline: true }).setColor("DarkRed").setTimestamp()] });
+      return interaction.editReply({ content: `✅ **${target.user.tag}** banned.` });
+    }
+    if (commandName === "unban") {
+      const userId = interaction.options.getString("userid"), reason = interaction.options.getString("reason") || "No reason";
+      await interaction.guild.members.unban(userId, reason);
+      return interaction.editReply({ content: `✅ \`${userId}\` unbanned.` });
+    }
+    if (commandName === "clear") {
+      const deleted = await interaction.channel.bulkDelete(interaction.options.getInteger("amount"), true);
+      return interaction.editReply({ content: `✅ Deleted **${deleted.size}** messages.` });
+    }
+    if (commandName === "userinfo") {
+      const user = interaction.options.getUser("user") || interaction.user;
+      const member = interaction.guild.members.cache.get(user.id);
+      const accAge = Math.floor((Date.now() - user.createdTimestamp) / 86_400_000);
+      return interaction.editReply({ embeds: [new EmbedBuilder().setTitle(`👤 ${user.tag}`).setThumbnail(user.displayAvatarURL({ dynamic: true })).addFields({ name: "🆔 ID", value: `\`${user.id}\``, inline: true }, { name: "🤖 Bot", value: user.bot ? "Yes" : "No", inline: true }, { name: "📅 Created", value: `<t:${Math.floor(user.createdTimestamp / 1000)}:F>` }, { name: "🗓️ Age", value: `${accAge} days`, inline: true }, { name: "📥 Joined", value: member?.joinedAt ? `<t:${Math.floor(member.joinedAt.getTime() / 1000)}:F>` : "N/A" }, { name: "🎭 Roles", value: member ? member.roles.cache.filter(r => r.id !== interaction.guild.id).map(r => `<@&${r.id}>`).join(", ") || "None" : "N/A" }).setColor("Blue").setTimestamp()] });
+    }
+    if (commandName === "serverinfo") {
+      const g = interaction.guild; await g.fetch();
+      return interaction.editReply({ embeds: [new EmbedBuilder().setTitle(`🏠 ${g.name}`).setThumbnail(g.iconURL({ dynamic: true })).addFields({ name: "🆔 ID", value: g.id, inline: true }, { name: "👑 Owner", value: `<@${g.ownerId}>`, inline: true }, { name: "👥 Members", value: `${g.memberCount}`, inline: true }, { name: "📅 Created", value: `<t:${Math.floor(g.createdTimestamp / 1000)}:F>` }, { name: "💬 Channels", value: `${g.channels.cache.size}`, inline: true }, { name: "🎭 Roles", value: `${g.roles.cache.size}`, inline: true }, { name: "😀 Emojis", value: `${g.emojis.cache.size}`, inline: true }).setColor("Blue").setTimestamp()] });
+    }
+    if (commandName === "filter") {
+      const sub = interaction.options.getSubcommand(), type = interaction.options.getString("type"), word = interaction.options.getString("word")?.toLowerCase();
+      if (sub === "add") { (type === "ban" ? runtimeBanWords : runtimeCensorWords).add(word); saveData(); return interaction.editReply({ content: `✅ **\`${word}\`** added to **${type}** list.` }); }
+      if (sub === "remove") { const removed = (type === "ban" ? runtimeBanWords : runtimeCensorWords).delete(word); saveData(); return interaction.editReply({ content: removed ? `✅ Removed.` : `❌ Word not found.` }); }
+      if (sub === "list") return interaction.editReply({ embeds: [new EmbedBuilder().setTitle("🔤 Word Filter Lists").addFields({ name: "🚫 Ban List", value: [...runtimeBanWords].join(", ") || "Empty" }, { name: "⚠️ Censor List", value: [...runtimeCensorWords].join(", ") || "Empty" }).setColor("Blue").setTimestamp()] });
+    }
+    if (commandName === "userwhitelist") {
+      const sub = interaction.options.getSubcommand(), user = interaction.options.getUser("user");
+      if (sub === "add") { whitelistedUsers.add(user.id); return interaction.editReply({ content: `✅ **${user.tag}** whitelisted.` }); }
+      if (sub === "remove") { if (isOwner(user.id)) return interaction.editReply({ content: "❌ Cannot remove owner." }); whitelistedUsers.delete(user.id); return interaction.editReply({ content: `✅ Removed.` }); }
+      if (sub === "list") return interaction.editReply({ embeds: [new EmbedBuilder().setTitle("👥 Whitelisted Users").setDescription([...whitelistedUsers].map(id => `<@${id}>`).join("\n") || "None").setColor("Blue").setTimestamp()] });
+    }
+    if (commandName === "botwhitelist") {
+      const sub = interaction.options.getSubcommand(), botId = interaction.options.getString("botid");
+      if (sub === "add") { whitelistedBots.add(botId); return interaction.editReply({ content: `✅ Bot \`${botId}\` whitelisted.` }); }
+      if (sub === "remove") { whitelistedBots.delete(botId); return interaction.editReply({ content: `✅ Removed.` }); }
+      if (sub === "list") return interaction.editReply({ embeds: [new EmbedBuilder().setTitle("🤖 Whitelisted Bots").setDescription([...whitelistedBots].join("\n") || "None").setColor("Blue").setTimestamp()] });
+    }
+    if (commandName === "nukewhitelist") {
+      const sub = interaction.options.getSubcommand(), user = interaction.options.getUser("user");
+      if (sub === "add") { whitelistedUsers.add(user.id); return interaction.editReply({ content: `✅ **${user.tag}** added to nuke whitelist.` }); }
+      if (sub === "remove") { if (isOwner(user.id)) return interaction.editReply({ content: "❌ Cannot remove owner." }); whitelistedUsers.delete(user.id); return interaction.editReply({ content: `✅ Removed.` }); }
+      if (sub === "list") return interaction.editReply({ embeds: [new EmbedBuilder().setTitle("🛡️ Nuke Whitelist").setDescription([...whitelistedUsers].map(id => `<@${id}>`).join("\n") || "None").setColor("Blue").setTimestamp()] });
+    }
+    if (commandName === "security") {
+      return interaction.editReply({ embeds: [new EmbedBuilder().setTitle("🔒 Security Status").addFields({ name: "🚨 Anti-Nuke", value: "✅ Active", inline: true }, { name: "🤖 Anti-Bot", value: "✅ Active", inline: true }, { name: "🛑 Anti-Spam", value: "✅ Active (5 msgs/5s)", inline: true }, { name: "🚫 Word Filter", value: `Ban: **${runtimeBanWords.size}** | Censor: **${runtimeCensorWords.size}**` }, { name: "👥 Whitelisted Users", value: `${whitelistedUsers.size}`, inline: true }, { name: "🤖 Whitelisted Bots", value: `${whitelistedBots.size}`, inline: true }, { name: "🔐 Verification", value: unverifiedRoleId ? "✅ Enabled" : "⚠️ Run /setup-verify" }, { name: "📋 Nuke Limits", value: Object.entries(config.nuke).map(([k, v]) => `**${k}**: ${v.count}/${v.window / 1000}s`).join("\n") }).setColor("DarkGreen").setTimestamp()] });
+    }
+    if (commandName === "setup-verify") {
+      const unverRole = interaction.guild.roles.cache.find(r => r.name.toLowerCase().includes("unverif") || r.name.toLowerCase().includes("member"));
+      if (!unverRole) return interaction.editReply({ content: "❌ Create a role named **Unverified** first." });
+      unverifiedRoleId = unverRole.id; saveData();
+      const vc = interaction.guild.channels.cache.get(config.verifyChannel);
+      if (vc) await vc.send({ embeds: [new EmbedBuilder().setTitle("🔐 Verification Required").setDescription(`Click below to verify and get access.`).setColor("Green").setTimestamp()], components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId("verify").setLabel("✅ Verify Me").setStyle(ButtonStyle.Success))] });
+      return interaction.editReply({ content: `✅ Verification set up! Unverified Role: <@&${unverRole.id}>` });
+    }
+  } catch (err) {
+    console.error(`[CMD:${commandName}]`, err);
+    interaction.editReply({ content: `❌ Error: ${err.message}` }).catch(() => {});
+  }
+});
+
+process.on("unhandledRejection", err => console.error("[Unhandled Rejection]", err));
+process.on("uncaughtException",  err => console.error("[Uncaught Exception]", err));
+
+client.login(config.token);
